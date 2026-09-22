@@ -3267,6 +3267,7 @@ func CreateTestResponseRecorder() *TestResponseRecorder {
 func TestContextStream(t *testing.T) {
 	w := CreateTestResponseRecorder()
 	c, _ := CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
 	stopStream := true
 	c.Stream(func(w io.Writer) bool {
@@ -3287,10 +3288,11 @@ func TestContextStreamWithClientGone(t *testing.T) {
 	w := CreateTestResponseRecorder()
 	c, _ := CreateTestContext(w)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+
 	c.Stream(func(writer io.Writer) bool {
-		defer func() {
-			w.closeClient()
-		}()
+		defer cancel()
 
 		_, err := writer.Write([]byte("test"))
 		require.NoError(t, err)
@@ -3299,6 +3301,47 @@ func TestContextStreamWithClientGone(t *testing.T) {
 	})
 
 	assert.Equal(t, "test", w.Body.String())
+}
+
+func TestContextSSEStream(t *testing.T) {
+	w := CreateTestResponseRecorder()
+	c, _ := CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	stopStream := true
+	c.SSEStream(func(c *Context) bool {
+		defer func() {
+			stopStream = false
+		}()
+
+		c.SSEvent("message", "test")
+
+		return stopStream
+	})
+
+	assert.Equal(t, "text/event-stream;charset=utf-8", w.Header().Get("Content-Type"))
+	assert.Equal(t, "no-cache", w.Header().Get("Cache-Control"))
+	assert.Equal(t, "keep-alive", w.Header().Get("Connection"))
+	assert.Equal(t, "event:message\ndata:test\n\nevent:message\ndata:test\n\n", w.Body.String())
+}
+
+func TestContextSSEStreamWithClientGone(t *testing.T) {
+	w := CreateTestResponseRecorder()
+	c, _ := CreateTestContext(w)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+
+	clientGone := c.SSEStream(func(c *Context) bool {
+		defer cancel()
+
+		c.SSEvent("message", "test")
+
+		return true
+	})
+
+	assert.True(t, clientGone)
+	assert.Equal(t, "event:message\ndata:test\n\n", w.Body.String())
 }
 
 func TestContextResetInHandler(t *testing.T) {
